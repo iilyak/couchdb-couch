@@ -406,6 +406,19 @@ get_docs_in_namespace(#db{name = <<"shards/", _:18/binary, DbName/binary>>}, NS)
     receive {'DOWN', Ref, _, _, Response} ->
         Response
     end;
+get_docs_in_namespace(#db{local_tree = LocalBtree}, <<"_local">> = NS) ->
+    FoldFun = skip_deleted(fun
+        ({Id, Value}, _Reds, Acc) ->
+            case has_prefix(Id, NS) of
+                true ->
+                    {ok, [{Id, Value} | Acc]};
+                false ->
+                    {stop, Acc}
+            end
+    end),
+    KeyOpts = namespace_range(NS),
+    {ok, _, Docs} = couch_btree:fold(LocalBtree, FoldFun, [], KeyOpts),
+    {ok, Docs};
 get_docs_in_namespace(#db{id_tree = IdBtree}, NS) ->
     {true, _} = couch_db_api:validate_namespace(NS),
     FoldFun = skip_deleted(fun
