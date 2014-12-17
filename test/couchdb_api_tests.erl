@@ -55,7 +55,8 @@ api_tests() ->
           foreach,
           fun setup/0, fun teardown/1,
           [
-           fun should_get_design_docs/1
+           fun should_get_design_docs/1,
+           fun should_get_docs_in_namespace/1
           ]
         }
        ]
@@ -70,6 +71,18 @@ should_get_design_docs({_Host, DbName}) ->
         end, lists:seq(1, 10)),
         {ok, Db1} = couch_db:reopen(Db),
         {ok, Docs} = couch_db:get_design_docs(Db1),
+        ?assertEqual(10, length(Docs)),
+        ?assertMatch([#full_doc_info{}|_], Docs)
+    end).
+
+should_get_docs_in_namespace({_Host, DbName}) ->
+    ?_test(begin
+        {ok, Db} = open_db(DbName),
+        lists:foreach(fun(Idx) ->
+            add_design_doc(DbName, <<"_design/example-", ($A + Idx)>>)
+        end, lists:seq(1, 10)),
+        {ok, Db1} = couch_db:reopen(Db),
+        {ok, Docs} = couch_db:get_docs_in_namespace(Db1, <<"_design">>),
         ?assertEqual(10, length(Docs)),
         ?assertMatch([#full_doc_info{}|_], Docs)
     end).

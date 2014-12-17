@@ -13,6 +13,7 @@
 -module(couch_db).
 
 -export([open/2,open_int/2,close/1,create/2,get_db_info/1,get_design_docs/1]).
+-export([get_docs_in_namespace/2]).
 -export([start_compact/1, cancel_compact/1]).
 -export([wait_for_compaction/1, wait_for_compaction/2]).
 -export([is_idle/1,monitor/1,count_changes_since/2]).
@@ -397,6 +398,30 @@ get_design_docs(#db{id_tree = IdBtree}) ->
             {stop, Acc}
     end),
     KeyOpts = [{start_key, <<"_design/">>}, {end_key_gt, <<"_design0">>}],
+    {ok, _, Docs} = couch_btree:fold(IdBtree, FoldFun, [], KeyOpts),
+    {ok, Docs}.
+
+get_docs_in_namespace(#db{name = <<"shards/", _:18/binary, DbName/binary>>}, NS) ->
+    {_, Ref} = spawn_monitor(fun() -> exit(fabric:docs_in_namespace(DbName, NS)) end),
+    receive {'DOWN', Ref, _, _, Response} ->
+        Response
+    end;
+get_docs_in_namespace(#db{id_tree = IdBtree}, NS) ->
+    {true, _} = couch_db_api:validate_namespace(NS),
+    FoldFun = skip_deleted(fun
+        (#full_doc_info{deleted = true}, _Reds, Acc) ->
+            {ok, Acc};
+        (#full_doc_info{id = Id}=FullDocInfo, _Reds, Acc) ->
+            case has_prefix(Id, NS) of
+                true ->
+                    {ok, [FullDocInfo | Acc]};
+                false ->
+                    {stop, Acc}
+            end;
+        (_, _Reds, Acc) ->
+            {stop, Acc}
+    end),
+    KeyOpts = namespace_range(NS),
     {ok, _, Docs} = couch_btree:fold(IdBtree, FoldFun, [], KeyOpts),
     {ok, Docs}.
 
@@ -1383,4 +1408,15 @@ skip_deleted(FoldFun) ->
             {skip, Acc};
         (traverse, _, _, Acc) ->
             {ok, Acc}
+    end.
+
+namespace_range(NS) ->
+    [{start_key, <<NS/binary, "/">>}, {end_key_gt, <<NS/binary, "0">>}].
+
+has_prefix(Id, NS) ->
+    case binary:split(Id, [<<"/">>]) of
+        [H|_] when H == NS ->
+            true;
+        _ ->
+            false
     end.
