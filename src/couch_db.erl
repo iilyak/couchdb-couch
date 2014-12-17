@@ -388,18 +388,8 @@ get_design_docs(#db{name = <<"shards/", _:18/binary, DbName/binary>>}) ->
     receive {'DOWN', Ref, _, _, Response} ->
         Response
     end;
-get_design_docs(#db{id_tree = IdBtree}) ->
-    FoldFun = skip_deleted(fun
-        (#full_doc_info{deleted = true}, _Reds, Acc) ->
-            {ok, Acc};
-        (#full_doc_info{id= <<"_design/",_/binary>>}=FullDocInfo, _Reds, Acc) ->
-            {ok, [FullDocInfo | Acc]};
-        (_, _Reds, Acc) ->
-            {stop, Acc}
-    end),
-    KeyOpts = [{start_key, <<"_design/">>}, {end_key_gt, <<"_design0">>}],
-    {ok, _, Docs} = couch_btree:fold(IdBtree, FoldFun, [], KeyOpts),
-    {ok, Docs}.
+get_design_docs(Db) ->
+    get_docs_in_namespace(Db, <<"_design">>).
 
 get_docs_in_namespace(#db{name = <<"shards/", _:18/binary, DbName/binary>>}, NS) ->
     {_, Ref} = spawn_monitor(fun() -> exit(fabric:docs_in_namespace(DbName, NS)) end),
