@@ -14,6 +14,8 @@
 
 -include_lib("couch/include/couch_eunit.hrl").
 
+-define(STREAM_SIZE, 12345).
+
 
 setup() ->
     {ok, Fd} = couch_file:open(?tempfile(), [create, overwrite]),
@@ -44,6 +46,20 @@ stream_test_() ->
         }
     }.
 
+compare_stream_test_() ->
+    {
+        "CouchDB compare stream tests",
+        [
+         fun should_return_true_for_equal_streams/0,
+         fun should_return_false_if_first_is_longer/0,
+         fun should_return_false_if_second_is_longer/0,
+         fun should_return_false_if_different_same_length/0,
+         fun should_return_false_if_different_first_is_longer/0,
+         fun should_return_false_if_different_second_is_longer/0,
+         fun should_return_false_if_first_is_empty/0,
+         fun should_return_false_if_second_is_empty/0
+        ]
+    }.
 
 should_write({_, Stream}) ->
     ?_assertEqual(ok, couch_stream:write(Stream, <<"food">>)).
@@ -109,6 +125,58 @@ should_stop_on_normal_exit_of_stream_opener({Fd, _}) ->
     ?_assertNot(is_process_alive(OpenerPid)),
     % Verify the stream itself has also died
     ?_assertNot(is_process_alive(StreamPid)).
+
+compare_streams(APosList, BPosList) ->
+    Next = fun({Pos, Len}) -> deterministic_stream(Pos, Len) end,
+    couch_stream:compare_streams({Next, {APosList, []}}, {Next, {BPosList, []}}).
+
+should_return_true_for_equal_streams() ->
+    APosList = random_positions(),
+    BPosList = random_positions(),
+    ?assert(compare_streams(APosList, BPosList)).
+should_return_false_if_first_is_longer() ->
+    APosList = [{?STREAM_SIZE, 4}|random_positions()],
+    BPosList = random_positions(),
+    ?assertNot(compare_streams(APosList, BPosList)).
+should_return_false_if_second_is_longer() ->
+    APosList = random_positions(),
+    BPosList = [{?STREAM_SIZE, 4}|random_positions()],
+    ?assertNot(compare_streams(APosList, BPosList)).
+should_return_false_if_different_same_length() ->
+    APosList = [{?STREAM_SIZE + 4, 4}|random_positions()],
+    BPosList = [{?STREAM_SIZE + 6, 4}|random_positions()],
+    ?assertNot(compare_streams(APosList, BPosList)).
+should_return_false_if_different_first_is_longer() ->
+    APosList = [{?STREAM_SIZE + 4, 6}|random_positions()],
+    BPosList = [{?STREAM_SIZE + 6, 4}|random_positions()],
+    ?assertNot(compare_streams(APosList, BPosList)).
+should_return_false_if_different_second_is_longer() ->
+    APosList = [{?STREAM_SIZE + 4, 4}|random_positions()],
+    BPosList = [{?STREAM_SIZE + 6, 6}|random_positions()],
+    ?assertNot(compare_streams(APosList, BPosList)).
+should_return_false_if_first_is_empty() ->
+    BPosList = random_positions(),
+    ?assertNot(compare_streams([], BPosList)).
+should_return_false_if_second_is_empty() ->
+    APosList = random_positions(),
+    ?assertNot(compare_streams(APosList, [])).
+
+
+deterministic_stream(Pos, Len) ->
+    random:seed({1,2,3}),
+    Bin = list_to_binary(lists:map(
+        fun(_) -> $A + random:uniform(25) end, lists:seq(1, Pos + Len))),
+    <<_:Pos/binary, Res:Len/binary>> = Bin,
+    [[[<<>>]]|[Res]].
+
+random_positions() ->
+    random:seed(now()),
+    {PosList, Last} = lists:mapfoldl(
+        fun(_, Pos) ->
+            Len = random:uniform(100) + 16, %% min 16 bytes in a chunk
+            {{Pos, Len}, Len + Pos} %% we assume ?STREAM_SIZE > 10000
+        end, 0, lists:seq(1, 100)),
+    lists:sort([{Last, ?STREAM_SIZE - Last}|PosList]).
 
 
 read_all(Fd, PosList) ->

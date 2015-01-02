@@ -18,6 +18,11 @@
 -export([open/1, open/2, close/1]).
 -export([foldl/4, foldl/5, foldl_decode/6, range_foldl/6]).
 -export([copy_to_new_stream/3, write/2]).
+-export([compare_streams/4]).
+
+-ifdef(TEST).
+    -export([compare_streams/2]).
+-endif.
 
 % gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -63,6 +68,48 @@ copy_to_new_stream(Fd, PosList, DestFd) ->
             ok = write(Dest, Bin)
         end, ok),
     close(Dest).
+
+compare_streams(AFd, APosList, BFd, BPosList) ->
+    ANext = fun(Pos) ->
+                {ok, Bin} = couch_file:pread_iolist(AFd, Pos),
+                Bin
+            end,
+    BNext = fun(Pos) ->
+                {ok, Bin} = couch_file:pread_iolist(BFd, Pos),
+                Bin
+            end,
+    compare_streams(iterator(ANext, APosList), iterator(BNext, BPosList)).
+
+compare_streams(A, B) ->
+    do_compare(next(A), next(B)).
+
+do_compare(undefined, undefined) ->
+    true;
+do_compare({<<>>, A}, undefined) ->
+    do_compare(next(A), undefined);
+do_compare(undefined, {<<>>, B}) ->
+    do_compare(undefined, next(B));
+do_compare(undefined, _) ->
+    false;
+do_compare(_, undefined) ->
+    false;
+do_compare({Bin, A}, {Bin, B}) ->
+    do_compare(next(A), next(B));
+do_compare({<<>>, A}, {BBin, B}) ->
+    do_compare(next(A), {BBin, B});
+do_compare({ABin, A}, {<<>>, B}) ->
+    do_compare({ABin, A}, next(B));
+do_compare({ABin, A}, {BBin, B}) ->
+    ASize = byte_size(ABin),
+    BSize = byte_size(BBin),
+    case {ABin, BBin} of
+    {ABin, <<ABin:ASize/binary, Rest/binary>>} ->
+            do_compare(next(A), {Rest, B});
+    {<<BBin:BSize/binary, Rest/binary>>, BBin} ->
+            do_compare({Rest, A}, next(B));
+    _ ->
+        false
+    end.
 
 foldl(_Fd, [], _Fun, Acc) ->
     Acc;
@@ -304,3 +351,31 @@ handle_info({'DOWN', Ref, _, _, _}, #stream{opener_monitor=Ref} = State) ->
     {stop, normal, State};
 handle_info(_Info, State) ->
     {noreply, State}.
+
+iterator(Next, PosList) ->
+    {Next, {lists:sort(PosList), []}}.
+
+next({_Fun, {[], []}}) ->
+    undefined;
+next({Fun, {PosList, [H|T]}}) ->
+    {Bin, Rest} = next_binary(H, T),
+    {Bin, {Fun, {PosList, Rest}}};
+next({Fun, {[Pos|Rest], []}}) ->
+    next({Fun, {Rest, Fun(Pos)}});
+next({Fun, {PosList, Bin}}) ->
+    {Bin, {Fun, {PosList, []}}};
+next(undefined) ->
+    undefined.
+
+next_binary([H|T], Tail) when is_list(H) ->
+    next_binary(H, [T|Tail]);
+next_binary([H|T], Tail) ->
+    {H, [T|Tail]};
+next_binary([], [H|T]) when is_list(H) ->
+    next_binary(H, T);
+next_binary([], [H|T]) ->
+    {H, T};
+next_binary([], []) ->
+    {<<>>, []};
+next_binary(Bin, Tail) ->
+    {Bin, Tail}.
