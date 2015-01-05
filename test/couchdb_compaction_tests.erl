@@ -196,7 +196,7 @@ db_file_size(#db{filepath = FilePath}) ->
 
 read_attach(Db, DocId) ->
     {ok, #doc{atts = [Att]} = D} = couch_db:open_doc(Db, DocId, []),
-    {Content, _} = couch_att:foldl_decode(Att, fun(A, Acc) -> {A, Acc} end, []),
+    Content = couch_att:foldl_decode(Att, fun(A, Acc) -> Acc ++ A end, []),
     {Att, iolist_to_binary(Content)}.
 
 
