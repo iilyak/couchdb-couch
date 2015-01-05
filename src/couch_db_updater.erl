@@ -1026,16 +1026,30 @@ copy_doc_attachments(#db{fd = SrcFd} = SrcDb, SrcSp, DestFd, Processed) ->
     {BodyData, NewBinInfos, NewProcessed}.
 
 maybe_copy_att_data(ExpectedMd5, SrcFd, BinSp, DestFd, Processed) ->
-    case dict:find(ExpectedMd5, Processed) of
-        error ->
-            {NewBinSp, AttLen, _, ActualMd5, _IdentityMd5} =
-                couch_stream:copy_to_new_stream(SrcFd, BinSp, DestFd),
-            check_md5(ExpectedMd5, ActualMd5),
-            Value = {NewBinSp, AttLen},
-            {Value, dict:store(ExpectedMd5, Value, Processed), true};
-        {ok, Value} ->
+    Candidates = cache_get(ExpectedMd5, Processed),
+    case select_from_candidates(SrcFd, BinSp, DestFd, Candidates) of
+        not_found ->
+            Value = copy_att_data(ExpectedMd5, SrcFd, BinSp, DestFd),
+            {Value, cache_append(ExpectedMd5, Value, Processed), true};
+        Value ->
             {Value, Processed, false}
     end.
+
+select_from_candidates(SrcFd, SrcBinSp, DstFd, [{DstBinSp, _} = Value|Rest]) ->
+    case couch_stream:compare_streams(SrcFd, SrcBinSp, DstFd, DstBinSp) of
+        true ->
+            Value;
+        false ->
+            select_from_candidates(SrcFd, SrcBinSp, DstFd, Rest)
+    end;
+select_from_candidates(_SrcFd, _SrcBinSp, _DstFd, []) ->
+    not_found.
+
+copy_att_data(ExpectedMd5, SrcFd, BinSp, DestFd) ->
+    {NewBinSp, AttLen, _, ActualMd5, _IdentityMd5} =
+        couch_stream:copy_to_new_stream(SrcFd, BinSp, DestFd),
+    check_md5(ExpectedMd5, ActualMd5),
+    {NewBinSp, AttLen}.
 
 read_doc_with_atts(SrcDb, SrcSp) ->
     {ok, {BodyData, BinInfos0}} = couch_db:read_doc(SrcDb, SrcSp),
@@ -1102,7 +1116,7 @@ copy_docs(Db, #db{fd = DestFd} = NewDb, MixedInfos, Retry) ->
             rev_tree = NewRevTree,
             sizes = add_sizes(FinalSizeInfoTree, FinalSizeInfoAtts)
         }, GlobalProcessed}
-    end, dict:new(), NewInfos0),
+    end, cache_new(), NewInfos0),
 
     NewInfos = stem_full_doc_infos(Db, NewInfos1),
     RemoveSeqs =
@@ -1454,3 +1468,17 @@ make_doc_summary(#db{compression = Comp}, {Body0, Atts0}) ->
     end,
     SummaryBin = ?term_to_bin({Body, Atts}),
     couch_file:assemble_file_chunk(SummaryBin, couch_util:md5(SummaryBin)).
+
+cache_new() ->
+    dict:new().
+
+cache_get(Key, Cache) ->
+    case dict:find(Key, Cache) of
+        error ->
+            [];
+        {ok, List} ->
+            List
+    end.
+
+cache_append(Key, Value, Cache) ->
+    dict:append(Key, Value, Cache).
