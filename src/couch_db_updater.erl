@@ -1003,27 +1003,29 @@ copy_doc_attachments(#db{fd = SrcFd} = SrcDb, SrcSp, DestFd, Processed) ->
     {BodyData, BinInfos} = read_doc_with_atts(SrcDb, SrcSp),
     % copy the bin values
     {NewBinInfos, NewProcessed} = lists:mapfoldl(
-        fun({Name, Type, BinSp, AttLen, RevPos, ExpectedMd5}, ProcAcc) ->
-            % 010 UPGRADE CODE
+        fun(Att, ProcAcc) ->
+            {Base, _Ext} = upgrade_att(SrcFd, Att),
+            {Name, Type, BinSp, AttLen, DiskLen, RevPos, ExpectedMd5, Enc} = Base,
             {{NewBinSp, AttLen}, NewProcAcc, IsNew} =
                 maybe_copy_att_data(ExpectedMd5, SrcFd, BinSp, DestFd, ProcAcc),
-            {{IsNew, {Name, Type, NewBinSp, AttLen, AttLen, RevPos, ExpectedMd5, identity}}, NewProcAcc};
-        ({Name, Type, BinSp, AttLen, DiskLen, RevPos, ExpectedMd5, Enc1}, ProcAcc) ->
-            {{NewBinSp, AttLen}, NewProcAcc, IsNew} =
-                maybe_copy_att_data(ExpectedMd5, SrcFd, BinSp, DestFd, ProcAcc),
-            Enc = case Enc1 of
-            true ->
-                % 0110 UPGRADE CODE
-                gzip;
-            false ->
-                % 0110 UPGRADE CODE
-                identity;
-            _ ->
-                Enc1
-            end,
             {{IsNew, {Name, Type, NewBinSp, AttLen, DiskLen, RevPos, ExpectedMd5, Enc}}, NewProcAcc}
         end, Processed, BinInfos),
     {BodyData, NewBinInfos, NewProcessed}.
+
+upgrade_att(Fd, {Name, Type, BinSp, AttLen, RevPos, ExpectedMd5}) ->
+    % 010 UPGRADE CODE
+    upgrade_att(Fd, {Name, Type, BinSp, AttLen, RevPos, ExpectedMd5, identity});
+upgrade_att(Fd, {Name, Type, BinSp, AttLen, DiskLen, RevPos, ExpectedMd5, true}) ->
+    % 0110 UPGRADE CODE
+    upgrade_att(Fd, {Name, Type, BinSp, AttLen, DiskLen, RevPos, ExpectedMd5, gzip});
+upgrade_att(Fd, {Name, Type, BinSp, AttLen, DiskLen, RevPos, ExpectedMd5, false}) ->
+    % 0110 UPGRADE CODE
+    upgrade_att(Fd, {Name, Type, BinSp, AttLen, DiskLen, RevPos, ExpectedMd5, identity});
+upgrade_att(Fd, {Name, Type, BinSp, AttLen, DiskLen, RevPos, ExpectedMd5, Enc}) ->
+    % 0110 UPGRADE CODE
+    upgrade_att(Fd, {{Name, Type, BinSp, AttLen, DiskLen, RevPos, ExpectedMd5, Enc}, []});
+upgrade_att(_Fd, {Base, Ext}) ->
+    {Base, Ext}.
 
 maybe_copy_att_data(ExpectedMd5, SrcFd, BinSp, DestFd, Processed) ->
     Candidates = cache_get(ExpectedMd5, Processed),
