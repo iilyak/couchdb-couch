@@ -68,56 +68,41 @@ compaction_tests() ->
         }
     ].
 
-should_not_duplicate_inline_atts({_Host, DbName}) ->
+should_not_duplicate_inline_atts(Ctx) ->
     ?_test(begin
-        create_inline_text_att(DbName, <<"doc1">>),
-        create_inline_text_att(DbName, <<"doc2">>),
-        ?assertEqual(2, count_unique_atts(DbName)),
+        create_doc_with_attach(Ctx, "doc1"),
+        create_doc_with_attach(Ctx, "doc2"),
 
-        {ok, Db1} = couch_db:open_int(list_to_binary(DbName), []),
+        ?assertEqual(2, count_unique_atts(Ctx)),
 
-        SizeBeforeCompaction = db_file_size(Db1),
+        SizeBeforeCompaction = db_file_size(Ctx),
 
-        couch_db:start_compact(Db1),
-        couch_db:wait_for_compaction(Db1),
-        couch_db:close(Db1),
+        compact_db(Ctx),
 
-        ?assertEqual(1, count_unique_atts(DbName)),
+        ?assertEqual(1, count_unique_atts(Ctx)),
 
-        {ok, Db2} = couch_db:open_int(list_to_binary(DbName), []),
         AttData = attach_data(),
-        ?assertMatch({_, AttData}, read_attach(Db2, <<"doc1">>)),
-        ?assertMatch({_, AttData}, read_attach(Db2, <<"doc2">>)),
+        ?assertMatch(AttData, get_att(Ctx, "doc1")),
+        ?assertMatch(AttData, get_att(Ctx, "doc2")),
 
-
-        SizeAfterCompaction = db_file_size(Db2),
+        SizeAfterCompaction = db_file_size(Ctx),
 
         ?assert(SizeAfterCompaction < SizeBeforeCompaction)
 
     end).
 
-should_preserve_att_when_delete_shared({_Host, DbName}) ->
+should_preserve_att_when_delete_shared(Ctx) ->
     ?_test(begin
-        Rev = create_inline_text_att(DbName, <<"doc1">>),
-        create_inline_text_att(DbName, <<"doc2">>),
-        ?assertEqual(2, count_unique_atts(DbName)),
+        Rev = create_doc_with_attach(Ctx, "doc1"),
+        create_doc_with_attach(Ctx, "doc2"),
+        ?assertEqual(2, count_unique_atts(Ctx)),
 
-        {ok, Db1} = couch_db:open_int(list_to_binary(DbName), []),
+        compact_db(Ctx),
+        delete_doc(Ctx, "doc1", Rev),
+        compact_db(Ctx),
 
-        couch_db:start_compact(Db1),
-        couch_db:wait_for_compaction(Db1),
-        couch_db:close(Db1),
-
-        {ok, Db2} = couch_db:open_int(list_to_binary(DbName), []),
-        ok = delete_doc(Db2, <<"doc1">>, Rev),
-
-        couch_db:start_compact(Db2),
-        couch_db:wait_for_compaction(Db2),
-        couch_db:close(Db2),
-
-        {ok, Db3} = couch_db:open_int(list_to_binary(DbName), []),
         AttData = attach_data(),
-        ?assertMatch({_, AttData}, read_attach(Db3, <<"doc2">>))
+        ?assertMatch(AttData, get_att(Ctx, "doc2"))
     end).
 
 %% 1. Create doc A with attachment
@@ -127,106 +112,131 @@ should_preserve_att_when_delete_shared({_Host, DbName}) ->
 %% 5. Modify doc B (in a way that keeps the de-duped attachment without copying it)
 %% 6. Check that active size isn't increased by more than the attachment size
 
-should_calcualte_active_size_on_doc_update({_Host, DbName}) ->
+should_calcualte_active_size_on_doc_update(Ctx) ->
     ?_test(begin
-        create_inline_text_att(DbName, <<"doc1">>),
-        create_inline_text_att(DbName, <<"doc2">>),
-        ?assertEqual(2, count_unique_atts(DbName)),
+        create_doc_with_attach(Ctx, "doc1"),
+        create_doc_with_attach(Ctx, "doc2"),
 
-        {ok, Db1} = couch_db:open_int(list_to_binary(DbName), []),
+        ?assertEqual(2, count_unique_atts(Ctx)),
 
-        couch_db:start_compact(Db1),
-        couch_db:wait_for_compaction(Db1),
-        couch_db:close(Db1),
+        CompactedLen = get_compacted_att_len(Ctx, "doc1"),
 
-        {ok, Db2} = couch_db:open_int(list_to_binary(DbName), []),
-        {_, ActiveSizeBeforeUpdate, _} = sizes(Db2),
-        modify_doc(DbName, <<"doc2">>),
+        compact_db(Ctx),
 
-        {ok, Db3} = couch_db:reopen(Db2),
+        {_, ActiveSizeBeforeUpdate, _} = db_sizes(Ctx),
 
-        {_, ActiveSizeAfterUpdate, _} = sizes(Db2),
-        SizesAfterUpdate = sizes(Db3),
-        couch_db:close(Db3),
+        modify_doc(Ctx, "doc2"),
 
-        ?assert((ActiveSizeAfterUpdate - ActiveSizeBeforeUpdate) < ?ATT_SIZE)
+        %% make sure attach data is available
+        AttData = attach_data(),
+        ?assertMatch(AttData, get_att(Ctx, "doc1")),
+        ?assertMatch(AttData, get_att(Ctx, "doc2")),
+
+        {_, ActiveSizeAfterUpdate, _} = db_sizes(Ctx),
+        ?assert((ActiveSizeAfterUpdate - ActiveSizeBeforeUpdate) < CompactedLen)
     end).
 
-delete_doc(Db, Id, Rev) ->
-    %% Until COUCHDB-2515 is fixed we cannot use couch_doc:delete_doc
-    %%{ok, _Result} = couch_db:delete_doc(Db, Id, [{0, []}]),
-    EJson = body_with_attach(Id),
-    EJson1 = couch_util:json_apply_field({<<"_deleted">>, true}, EJson),
-    RevStr = couch_doc:rev_to_str(Rev),
-    EJson2 = couch_util:json_apply_field({<<"_rev">>, RevStr}, EJson1),
-    Doc = couch_doc:from_json_obj(EJson2),
-    {ok, _Rev} = couch_db:update_doc(Db, Doc, []),
-    ok.
-
-sizes(Db) ->
-    {ok, Info} = couch_db:get_db_info(Db),
-    {Sizes} = proplists:get_value(sizes, Info),
-    {
-        proplists:get_value(file, Sizes),
-        proplists:get_value(active, Sizes),
-        proplists:get_value(external, Sizes)
-    }.
-
-create_inline_text_att(DbName, Id) ->
-    {ok, Db} = couch_db:open_int(list_to_binary(DbName), []),
-    Doc = doc_with_attach(Id),
-    {ok, Rev} = couch_db:update_doc(Db, Doc, []),
-    couch_db:close(Db),
-    Rev.
-
-count_unique_atts(DbName) ->
-    {ok, Db} = couch_db:open_int(list_to_binary(DbName), []),
-    {ok, _, Atts} = couch_btree:foldl(Db#db.id_tree,
-        fun(#full_doc_info{rev_tree = Tree}, Acc) ->
-            Atts = couch_key_tree:fold(
-                fun(_, #leaf{atts = P}, _, A) -> [P|A] end, [], Tree),
-            {ok, Atts ++ Acc}
-        end, []),
-    couch_db:close(Db),
-    sets:size(sets:from_list(Atts)).
-
-db_file_size(#db{filepath = FilePath}) ->
-    {ok, Data} = file:read_file(FilePath),
-    size(Data).
-
-read_attach(Db, DocId) ->
-    {ok, #doc{atts = [Att]} = D} = couch_db:open_doc(Db, DocId, []),
-    Content = couch_att:foldl_decode(Att, fun(A, Acc) -> Acc ++ A end, []),
-    {Att, iolist_to_binary(Content)}.
-
-
-doc_with_attach(Id) ->
-    EJson = body_with_attach(Id),
-    couch_doc:from_json_obj(EJson).
-
-modify_doc(DbName, Id) ->
-    {ok, Db} = couch_db:open_int(list_to_binary(DbName), []),
-    {ok, #doc{revs = Revs, body = Body}} = couch_db:open_doc(Db, Id, [ejson_body]),
-    RevStr = couch_doc:rev_to_str(Revs),
-    EJson = couch_util:json_apply_field({<<"_rev">>, RevStr}, Body),
-    Doc = couch_doc:from_json_obj(EJson),
-    {ok, Rev} = couch_db:update_doc(Db, Doc, []),
-    couch_db:close(Db),
-    Rev.
-
-body_with_attach(Id) ->
-    {[
-        {<<"_id">>, Id},
-        {<<"_attachments">>, {[
-            {?ATT_TXT_NAME, {[
-                {<<"content_type">>, <<"text/plain">>},
-                {<<"data">>, base64:encode(attach_data())}
-            ]}
-        }]}}
-    ]}.
+create_doc_with_attach(Ctx, Id) ->
+    create_doc(Ctx, Id),
+    add_att(Ctx, Id).
 
 attach_data() ->
     %% We need file bigger than 4096 (gzipped)
     random:seed({1,2,3}),
     list_to_binary(lists:map(
         fun(_) -> $A + random:uniform(25) end, lists:seq(0, ?ATT_SIZE))).
+
+%% doc API
+create_doc({Host, DbName}, Id) ->
+    Url = Host ++ "/" ++ DbName ++ "/" ++ Id,
+    {ok, Code, _Headers, _Body} = test_request:put(Url, [], <<"{}">>),
+    ?assertEqual(201, Code),
+    ok.
+
+get_doc(Host, DbName, Id) ->
+    Url = Host ++ "/" ++ DbName ++ "/" ++ Id,
+    {ok, 200, _, Body} = test_request:get(Url),
+    Json = jiffy:decode(Body),
+    Json.
+
+
+modify_doc({Host, DbName}, Id) ->
+    Url = Host ++ "/" ++ DbName ++ "/" ++ Id,
+    Doc = get_doc(Host, DbName, Id),
+    EJson = couch_util:json_apply_field({<<"extra">>, 1}, Doc),
+    {ok, Code, _Headers, Body} = test_request:put(Url, [], jiffy:encode(EJson)),
+    ?assertEqual(201, Code),
+    NewDoc = jiffy:decode(Body),
+    couch_util:get_nested_json_value(NewDoc, [<<"rev">>]).
+
+delete_doc({Host, DbName}, Id, Rev) ->
+    Url = Host ++ "/" ++ DbName ++ "/" ++ Id
+        ++ "?rev=" ++ Rev,
+    {ok, 200, _, _Body} = test_request:delete(Url),
+    ok.
+
+%% att API
+add_att({Host, DbName}, DocId) ->
+    Doc = get_doc(Host, DbName, DocId),
+    Rev = couch_util:get_nested_json_value(Doc, [<<"_rev">>]),
+    Url = Host ++ "/" ++ DbName ++ "/" ++ DocId ++ "/foo"
+        ++ "?rev=" ++ Rev,
+    {ok, Code, _Headers, Body} = test_request:put(Url, [], attach_data()),
+    ?assertEqual(201, Code),
+    NewDoc = jiffy:decode(Body),
+    couch_util:get_nested_json_value(NewDoc, [<<"rev">>]).
+
+get_att({Host, DbName}, DocId) ->
+    Url = Host ++ "/" ++ DbName ++ "/" ++ DocId ++ "/foo",
+    {ok, 200, _, Body} = test_request:get(Url),
+    Body.
+
+%% db API
+db_sizes({Host, DbName}) ->
+    Url = Host ++ "/" ++ DbName,
+    {ok, 200, _, Body} = test_util:request(Url, [], get),
+    J = jiffy:decode(Body),
+    FileSize = couch_util:get_nested_json_value(J, [<<"sizes">>, <<"file">>]),
+    Active = couch_util:get_nested_json_value(J, [<<"sizes">>, <<"active">>]),
+    Ext = couch_util:get_nested_json_value(J, [<<"sizes">>, <<"external">>]),
+    {FileSize, Active, Ext}.
+
+%% db low level functions
+get_compacted_att_len({_Host, DbName}, Id) ->
+    {ok, Db} = couch_db:open_int(list_to_binary(DbName), []),
+    {Att, _} = read_attach(Db, list_to_binary(Id)),
+    Len = couch_att:fetch(att_len, Att),
+    couch_db:close(Db),
+    Len.
+
+compact_db({_Host, DbName}) ->
+    {ok, Db} = couch_db:open_int(list_to_binary(DbName), []),
+    couch_db:start_compact(Db),
+    couch_db:wait_for_compaction(Db),
+    ok.
+
+count_unique_atts({_, DbName}) ->
+    {ok, Db} = couch_db:open_int(list_to_binary(DbName), []),
+    {ok, _, Atts} = couch_btree:foldl(Db#db.id_tree,
+        fun(#full_doc_info{rev_tree = Tree}, Acc) ->
+            Atts = couch_key_tree:fold(
+                fun(_, #leaf{atts = P}, _, A) ->
+                        [P|A];
+                   (_, [], _, A) ->
+                        A
+                end, [], Tree),
+                {ok, Atts ++ Acc}
+        end, []),
+    couch_db:close(Db),
+    sets:size(sets:from_list(lists:flatten(Atts))).
+
+db_file_size({_Host, DbName}) ->
+    {ok, #db{filepath = FilePath} = Db} = couch_db:open_int(list_to_binary(DbName), []),
+    couch_db:close(Db),
+    {ok, Data} = file:read_file(FilePath),
+    size(Data).
+
+read_attach(Db, DocId) ->
+    {ok, #doc{atts = [Att]}} = couch_db:open_doc(Db, DocId, []),
+    Content = couch_att:foldl_decode(Att, fun(A, Acc) -> Acc ++ A end, []),
+    {Att, iolist_to_binary(Content)}.
