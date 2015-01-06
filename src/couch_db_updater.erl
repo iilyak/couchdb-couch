@@ -634,7 +634,8 @@ flush_trees(#db{fd = Fd} = Db,
     {Flushed, FinalAcc} = couch_key_tree:mapfold(
         fun(_Rev, Value, Type, SizesAcc) ->
             case Value of
-            #doc{deleted = IsDeleted, body = {summary, _, _, _} = DocSummary} ->
+            #doc{deleted = IsDeleted, body = {summary, _, _, _} = DocSummary,
+                 atts = Atts} ->
                 {summary, Summary, AttSizeInfo, AttsFd} = DocSummary,
                 % this node value is actually an unwritten document summary,
                 % write to disk.
@@ -657,6 +658,7 @@ flush_trees(#db{fd = Fd} = Db,
                 ExternalSize = ?term_size(Summary),
                 {ok, NewSummaryPointer, SummarySize} =
                     couch_file:append_raw_chunk(Fd, Summary),
+                AttSizes = [att_sizes(Att) || Att <- Atts],
                 Leaf = #leaf{
                     deleted = IsDeleted,
                     ptr = NewSummaryPointer,
@@ -667,7 +669,9 @@ flush_trees(#db{fd = Fd} = Db,
                     },
                     atts = AttSizeInfo
                 },
-                {Leaf, add_sizes(Type, Leaf, SizesAcc)};
+                SizesAcc1 = add_sizes(Type, Leaf, SizesAcc),
+                NewSizesAcc = subtract_cached_atts_sizes(Atts, SizesAcc1),
+                {Leaf, NewSizesAcc};
             #leaf{} ->
                 {Value, add_sizes(Type, Value, SizesAcc)};
             _ ->
