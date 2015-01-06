@@ -674,7 +674,7 @@ write_doc_summary(SummaryChunk, Fd, Leaf, NodeType, Atts, Acc) ->
     ExternalSize = ?term_size(SummaryChunk),
     {ok, NewSummaryPointer, SummarySize} =
         couch_file:append_raw_chunk(Fd, SummaryChunk),
-    AttSizes = [att_sizes(Att) || Att <- Atts],
+    {ok, AttSizes} = couch_att:size_info(Atts),
     NewLeaf = Leaf#leaf{
         ptr = NewSummaryPointer,
         sizes = #size_info{
@@ -1139,10 +1139,6 @@ copy_docs(Db, #db{fd = DestFd} = NewDb, MixedInfos, Retry) ->
     {ok, IdEms} = couch_emsort:add(NewDb#db.id_tree, FDIKVs),
     update_compact_task(length(NewInfos)),
     NewDb#db{id_tree=IdEms, seq_tree=SeqTree}.
-
-att_sizes(Att) ->
-    {_Fd, BinSp} = couch_att:fetch(data, Att),
-    {BinSp, couch_att:fetch(att_len, Att)}.
 
 copy_compact(Db, NewDb0, Retry) ->
     Compression = couch_compress:get_compression_method(),
