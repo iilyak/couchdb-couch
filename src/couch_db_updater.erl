@@ -636,7 +636,7 @@ flush_trees(#db{fd = Fd} = Db,
             case Value of
             #doc{deleted = IsDeleted, body = {summary, _, _, _} = DocSummary,
                  atts = Atts} ->
-                {summary, Summary, AttSizeInfo, AttsFd} = DocSummary,
+                {summary, Summary, _AttSizeInfo, AttsFd} = DocSummary,
                 % this node value is actually an unwritten document summary,
                 % write to disk.
                 % make sure the Fd in the written bins is the same Fd we are
@@ -655,23 +655,8 @@ flush_trees(#db{fd = Fd} = Db,
                                     " changed. Possibly retrying.", []),
                     throw(retry)
                 end,
-                ExternalSize = ?term_size(Summary),
-                {ok, NewSummaryPointer, SummarySize} =
-                    couch_file:append_raw_chunk(Fd, Summary),
-                AttSizes = [att_sizes(Att) || Att <- Atts],
-                Leaf = #leaf{
-                    deleted = IsDeleted,
-                    ptr = NewSummaryPointer,
-                    seq = UpdateSeq,
-                    sizes = #size_info{
-                        active = SummarySize,
-                        external = ExternalSize
-                    },
-                    atts = AttSizeInfo
-                },
-                SizesAcc1 = add_sizes(Type, Leaf, SizesAcc),
-                NewSizesAcc = subtract_cached_atts_sizes(Atts, SizesAcc1),
-                {Leaf, NewSizesAcc};
+                Leaf = #leaf{deleted = IsDeleted, seq = UpdateSeq},
+                write_doc_summary(Summary, Fd, Leaf, Type, Atts, SizesAcc);
             #leaf{} ->
                 {Value, add_sizes(Type, Value, SizesAcc)};
             _ ->
@@ -684,6 +669,23 @@ flush_trees(#db{fd = Fd} = Db,
         sizes = add_sizes(FinalSizeInfoTree, FinalSizeInfoAtts)
     },
     flush_trees(Db, RestUnflushed, [NewInfo | AccFlushed]).
+
+write_doc_summary(SummaryChunk, Fd, Leaf, NodeType, Atts, Acc) ->
+    ExternalSize = ?term_size(SummaryChunk),
+    {ok, NewSummaryPointer, SummarySize} =
+        couch_file:append_raw_chunk(Fd, SummaryChunk),
+    AttSizes = [att_sizes(Att) || Att <- Atts],
+    NewLeaf = Leaf#leaf{
+        ptr = NewSummaryPointer,
+        sizes = #size_info{
+            active = SummarySize,
+            external = ExternalSize
+        },
+        atts = AttSizes
+    },
+    Acc1 = add_sizes(NodeType, NewLeaf, Acc),
+    NewSizesAcc = subtract_cached_atts_sizes(Atts, Acc1),
+    {NewLeaf, NewSizesAcc}.
 
 add_sizes_acc() ->
     {#size_info{}, #size_info{}}.
@@ -1100,20 +1102,8 @@ copy_docs(Db, #db{fd = DestFd} = NewDb, MixedInfos, Retry) ->
                     copy_doc_attachments(Db, Sp, DestFd, Processed),
                 AttDiskTerms = [couch_att:to_disk_term(Att) || Att <- Atts],
                 SummaryChunk = make_doc_summary(NewDb, {Body, AttDiskTerms}),
-                ExternalSize = ?term_size(SummaryChunk),
-                {ok, Pos, SummarySize} = couch_file:append_raw_chunk(
-                    DestFd, SummaryChunk),
-                AttSizes = [att_sizes(Att) || Att <- Atts],
-                NewLeaf = Leaf#leaf{
-                    ptr = Pos,
-                    sizes = #size_info{
-                        active = SummarySize,
-                        external = ExternalSize
-                    },
-                    atts = AttSizes
-                },
-                SizesAcc1 = add_sizes(leaf, NewLeaf, SizesAcc),
-                NewSizesAcc = subtract_cached_atts_sizes(Atts, SizesAcc1),
+                {NewLeaf, NewSizesAcc} = write_doc_summary(
+                    SummaryChunk, DestFd, Leaf, leaf, Atts, SizesAcc),
                 {NewLeaf, {NewSizesAcc, NewProcessed}};
             (_Rev, _Leaf, branch, {SizesAcc, Processed}) ->
                 {?REV_MISSING, {SizesAcc, Processed}}
