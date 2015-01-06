@@ -642,19 +642,7 @@ flush_trees(#db{fd = Fd} = Db,
                 % make sure the Fd in the written bins is the same Fd we are
                 % and convert bins, removing the FD.
                 % All bins should have been written to disk already.
-                case {AttsFd, Fd} of
-                {nil, _} ->
-                    ok;
-                {SameFd, SameFd} ->
-                    ok;
-                _ ->
-                    % Fd where the attachments were written to is not the same
-                    % as our Fd. This can happen when a database is being
-                    % switched out during a compaction.
-                    couch_log:debug("File where the attachments are written has"
-                                    " changed. Possibly retrying.", []),
-                    throw(retry)
-                end,
+                ensure_same_fd(Fd, AttsFd),
                 Leaf = #leaf{deleted = IsDeleted, seq = UpdateSeq},
                 write_doc_summary(Summary, Fd, Leaf, Type, Atts, SizesAcc);
             #leaf{} ->
@@ -669,6 +657,18 @@ flush_trees(#db{fd = Fd} = Db,
         sizes = add_sizes(FinalSizeInfoTree, FinalSizeInfoAtts)
     },
     flush_trees(Db, RestUnflushed, [NewInfo | AccFlushed]).
+
+ensure_same_fd(_, nil) ->
+    ok;
+ensure_same_fd(Fd, Fd) ->
+    ok;
+ensure_same_fd(_, _) ->
+    % Fd where the attachments were written to is not the same
+    % as our Fd. This can happen when a database is being
+    % switched out during a compaction.
+    couch_log:debug("File where the attachments are written has"
+                    " changed. Possibly retrying.", []),
+    throw(retry).
 
 write_doc_summary(SummaryChunk, Fd, Leaf, NodeType, Atts, Acc) ->
     ExternalSize = ?term_size(SummaryChunk),
