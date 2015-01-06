@@ -519,10 +519,7 @@ reduce_sizes(_, nil) ->
 reduce_sizes(S1, S2) when is_integer(S1); is_integer(S2) ->
     reduce_sizes(upgrade_sizes(S1), upgrade_sizes(S2));
 reduce_sizes(#size_info{}=S1, #size_info{}=S2) ->
-    #size_info{
-        active = S1#size_info.active + S2#size_info.active,
-        external = S1#size_info.external + S2#size_info.external
-    }.
+    add_sizes(S1, S2).
 
 btree_by_seq_reduce(reduce, DocInfos) ->
     % count the number of documents
