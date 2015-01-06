@@ -708,10 +708,15 @@ add_sizes(#size_info{} = A, #size_info{} = B) ->
        external = A#size_info.external + B#size_info.external
     }.
 
-subtract_cached_atts_sizes(CachedAttsSizes, {TreeSizesAcc, AttSizesAcc}) ->
-    NewAttSizesAcc = lists:foldl(fun(Size, #size_info{active = Active} = SI) ->
-        SI#size_info{active = Active - Size}
-    end, AttSizesAcc, CachedAttsSizes),
+subtract_cached_atts_sizes(Atts, {TreeSizesAcc, AttSizesAcc}) ->
+    NewAttSizesAcc = lists:foldl(fun(Att, #size_info{active = Active} = SI) ->
+        case couch_att:fetch(cached, Att) of
+            true ->
+                SI#size_info{active = Active - couch_att:fetch(att_len, Att)};
+            _ ->
+                SI
+        end
+    end, AttSizesAcc, Atts),
     {TreeSizesAcc, NewAttSizesAcc}.
 
 send_result(Client, Doc, NewResult) ->
@@ -1003,12 +1008,9 @@ copy_doc_attachments(#db{fd = SrcFd} = SrcDb, SrcSp, DestFd, Processed) ->
     {BodyData, BinInfos} = read_doc_with_atts(SrcDb, SrcSp),
     % copy the bin values
     {NewBinInfos, NewProcessed} = lists:mapfoldl(
-        fun(Att, ProcAcc) ->
-            {Base, _Ext} = upgrade_att(SrcFd, Att),
-            {Name, Type, BinSp, AttLen, DiskLen, RevPos, ExpectedMd5, Enc} = Base,
-            {{NewBinSp, AttLen}, NewProcAcc, IsNew} =
-                maybe_copy_att_data(ExpectedMd5, SrcFd, BinSp, DestFd, ProcAcc),
-            {{IsNew, {Name, Type, NewBinSp, AttLen, DiskLen, RevPos, ExpectedMd5, Enc}}, NewProcAcc}
+        fun(DiskTerm, ProcAcc) ->
+            Att = upgrade_att(SrcFd, DiskTerm),
+            maybe_copy_att_data(SrcFd, DestFd, Att, ProcAcc)
         end, Processed, BinInfos),
     {BodyData, NewBinInfos, NewProcessed}.
 
@@ -1024,23 +1026,26 @@ upgrade_att(Fd, {Name, Type, BinSp, AttLen, DiskLen, RevPos, ExpectedMd5, false}
 upgrade_att(Fd, {Name, Type, BinSp, AttLen, DiskLen, RevPos, ExpectedMd5, Enc}) ->
     % 0110 UPGRADE CODE
     upgrade_att(Fd, {{Name, Type, BinSp, AttLen, DiskLen, RevPos, ExpectedMd5, Enc}, []});
-upgrade_att(_Fd, {Base, Ext}) ->
-    {Base, Ext}.
+upgrade_att(Fd, DiskTerm) ->
+    couch_att:from_disk_term(Fd, DiskTerm).
 
-maybe_copy_att_data(ExpectedMd5, SrcFd, BinSp, DestFd, Processed) ->
+maybe_copy_att_data(SrcFd, DestFd, Att, Processed) ->
+    [ExpectedMd5, {SrcFd, BinSp}] = couch_att:fetch([md5, data], Att),
     Candidates = cache_get(ExpectedMd5, Processed),
     case select_from_candidates(SrcFd, BinSp, DestFd, Candidates) of
         not_found ->
-            Value = copy_att_data(ExpectedMd5, SrcFd, BinSp, DestFd),
-            {Value, cache_append(ExpectedMd5, Value, Processed), true};
-        Value ->
-            {Value, Processed, false}
+            {NewBinSp, AttLen} = copy_att_data(ExpectedMd5, SrcFd, BinSp, DestFd),
+            NewAtt = couch_att:store([{data, {DestFd, NewBinSp}}, {att_len, AttLen}], Att),
+            {NewAtt, cache_append(ExpectedMd5, NewAtt, Processed)};
+        CachedAtt ->
+            {couch_att:store([{cached, true}], CachedAtt), Processed}
     end.
 
-select_from_candidates(SrcFd, SrcBinSp, DstFd, [{DstBinSp, _} = Value|Rest]) ->
+select_from_candidates(SrcFd, SrcBinSp, DstFd, [Att|Rest]) ->
+    {DstFd, DstBinSp} = couch_att:fetch(data, Att),
     case couch_stream:compare_streams(SrcFd, SrcBinSp, DstFd, DstBinSp) of
         true ->
-            Value;
+            Att;
         false ->
             select_from_candidates(SrcFd, SrcBinSp, DstFd, Rest)
     end;
@@ -1092,13 +1097,12 @@ copy_docs(Db, #db{fd = DestFd} = NewDb, MixedInfos, Retry) ->
             (_Rev, #leaf{ptr=Sp}=Leaf, leaf, {SizesAcc, Processed}) ->
                 {Body, Atts, NewProcessed} =
                     copy_doc_attachments(Db, Sp, DestFd, Processed),
-                AttInfos = [AttInfo || {_, AttInfo} <- Atts],
-                SummaryChunk = make_doc_summary(NewDb, {Body, AttInfos}),
+                AttDiskTerms = [couch_att:to_disk_term(Att) || Att <- Atts],
+                SummaryChunk = make_doc_summary(NewDb, {Body, AttDiskTerms}),
                 ExternalSize = ?term_size(SummaryChunk),
                 {ok, Pos, SummarySize} = couch_file:append_raw_chunk(
                     DestFd, SummaryChunk),
-                AttSizes = [{element(3,A), element(4,A)} || {_New, A} <- Atts],
-                CachedSizes = [element(4,A) || {false, A} <- Atts],
+                AttSizes = [att_sizes(Att) || Att <- Atts],
                 NewLeaf = Leaf#leaf{
                     ptr = Pos,
                     sizes = #size_info{
@@ -1108,7 +1112,7 @@ copy_docs(Db, #db{fd = DestFd} = NewDb, MixedInfos, Retry) ->
                     atts = AttSizes
                 },
                 SizesAcc1 = add_sizes(leaf, NewLeaf, SizesAcc),
-                NewSizesAcc = subtract_cached_atts_sizes(CachedSizes, SizesAcc1),
+                NewSizesAcc = subtract_cached_atts_sizes(Atts, SizesAcc1),
                 {NewLeaf, {NewSizesAcc, NewProcessed}};
             (_Rev, _Leaf, branch, {SizesAcc, Processed}) ->
                 {?REV_MISSING, {SizesAcc, Processed}}
@@ -1145,6 +1149,9 @@ copy_docs(Db, #db{fd = DestFd} = NewDb, MixedInfos, Retry) ->
     update_compact_task(length(NewInfos)),
     NewDb#db{id_tree=IdEms, seq_tree=SeqTree}.
 
+att_sizes(Att) ->
+    {_Fd, BinSp} = couch_att:fetch(data, Att),
+    {BinSp, couch_att:fetch(att_len, Att)}.
 
 copy_compact(Db, NewDb0, Retry) ->
     Compression = couch_compress:get_compression_method(),
