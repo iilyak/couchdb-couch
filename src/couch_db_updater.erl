@@ -651,10 +651,9 @@ flush_trees(#db{fd = Fd} = Db,
                 {Value, SizesAcc}
             end
         end, add_sizes_acc(), Unflushed),
-    {FinalSizeInfoTree, FinalSizeInfoAtts} = FinalAcc,
     NewInfo = InfoUnflushed#full_doc_info{
         rev_tree = Flushed,
-        sizes = add_sizes(FinalSizeInfoTree, FinalSizeInfoAtts)
+        sizes = add_sizes(FinalAcc)
     },
     flush_trees(Db, RestUnflushed, [NewInfo | AccFlushed]).
 
@@ -704,6 +703,9 @@ add_sizes(Type, #leaf{sizes=Sizes, atts=AttSizes}, {TreeSizesAcc, AttSizesAcc}) 
         active = AttSize,
         external = AttSize}),
     {NewTreeSizesAcc, NewAttSizesAcc}.
+
+add_sizes({TreeSizesAcc, AttSizesAcc}) ->
+    add_sizes(TreeSizesAcc, AttSizesAcc).
 
 add_sizes(#size_info{} = A, #size_info{} = B) ->
     #size_info{
@@ -1108,10 +1110,9 @@ copy_docs(Db, #db{fd = DestFd} = NewDb, MixedInfos, Retry) ->
             (_Rev, _Leaf, branch, {SizesAcc, Processed}) ->
                 {?REV_MISSING, {SizesAcc, Processed}}
         end, {add_sizes_acc(), Acc}, Info#full_doc_info.rev_tree),
-        {FinalSizeInfoTree, FinalSizeInfoAtts} = FinalAcc,
         {Info#full_doc_info{
             rev_tree = NewRevTree,
-            sizes = add_sizes(FinalSizeInfoTree, FinalSizeInfoAtts)
+            sizes = add_sizes(FinalAcc)
         }, GlobalProcessed}
     end, cache_new(), NewInfos0),
 
