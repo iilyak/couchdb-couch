@@ -3,7 +3,8 @@
 -export([
     validate_dbname/2,
     before_doc_update/2,
-    after_doc_read/2
+    after_doc_read/2,
+    validate_docid/1
 ]).
 
 -include_lib("couch/include/couch_db.hrl").
@@ -28,6 +29,11 @@ after_doc_read(#db{after_doc_read = Fun} = Db, Doc0) ->
         [Doc1, _Db] when is_function(Fun) -> Fun(Doc1, Db);
         [Doc1, _Db] -> Doc1
     end.
+
+validate_docid(Id) ->
+    Handle = couch_epi:get_handle(couch_db),
+    %% callbacks return true only if it specifically allow the given Id
+    couch_epi:any(Handle, couch_db, validate_docid, [Id], [ignore_providers]).
 
 %% ------------------------------------------------------------------
 %% Internal Function Definitions
