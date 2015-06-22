@@ -91,9 +91,22 @@
     design_url_handlers,
     auth,
     default_fun,
-    url_handlers
+    url_handlers,
+    begin_ts,
+    original_method,
+    nonce,
+    extra
 }).
 
+-record(httpd_res, {
+    end_ts,
+    code,
+    response,
+    status,
+    nonce,
+    should_log = true,
+    reason
+}).
 
 -record(doc, {
     id = <<"">>,
