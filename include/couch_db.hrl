@@ -91,6 +91,7 @@
     design_url_handlers,
     auth,
     default_fun,
+    absolute_uri,
     url_handlers,
     begin_ts,
     original_method,
