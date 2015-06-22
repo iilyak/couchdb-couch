@@ -95,6 +95,7 @@
     begin_ts,
     original_method,
     nonce,
+    authentication_funs = [],
     extra
 }).
 
