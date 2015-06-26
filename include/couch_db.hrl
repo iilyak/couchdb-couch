@@ -97,6 +97,7 @@
     original_method,
     nonce,
     authentication_funs = [],
+    cors_config,
     extra
 }).
 
